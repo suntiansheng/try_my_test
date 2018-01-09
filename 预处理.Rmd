@@ -1,0 +1,199 @@
+---
+title: "engel系数计算"
+author: "孙傲"
+date: "2017年9月23日"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+setwd("E:/科研立项/新建文件夹/CHARLS2013_Dataset")
+```
+
+# 数据预处理
+
+## 读取数据
+
+```{r}
+rm(list = ls())
+gc()
+setwd("E:/科研立项/新建文件夹/CHARLS2013_Dataset")
+library(foreign)
+library(DMwR)
+library(dplyr)
+my_data <- read.dta('Household_Income.dta')
+my_psu<- read.dta('PSU.dta')
+```
+
+## 选择需要处理的列
+
+```{r}
+my_psu <- select(my_psu,communityID,urban_nbs)
+my_name<- colnames(my_data)
+loc1<- grep('ge00[6,7,8,9]',my_name)
+#my_name[loc1]
+loc2<- grep('ge010',my_name)
+#my_name[loc2]
+loc<- c(loc1,loc2)
+my_name[loc]
+my_data<- select(my_data,ID,householdID,communityID,loc)
+my_data_select <- merge(my_data,my_psu,by = 'communityID') 
+my_data_select<- my_data_select[,-5]
+str(my_data_select)
+my_data_select <- my_data_select[,-c(26,27)]
+str(my_data_select)
+```
+
+## 将记录为9999的数据填充为非空值非零值的平均值
+
+```{r}
+select_loc<- grep('^ge009',colnames(my_data_select))
+colnames(my_data_select)[select_loc]
+
+for(i in select_loc){
+  mycol <- my_data_select[,i]
+  mycol1 <- mycol[mycol != 9999]
+  me <- mean(mycol1,na.rm = T)
+  mycol[mycol == 9999]<- me
+  my_data_select[,i] <- mycol
+}
+
+var_name <- colnames(my_data_select)
+var_loc <- grep('^ge0',var_name )
+var_name[var_loc]
+```
+
+
+##na填充为平均值(knn算法)
+```{r}
+#manyNAs(my_data_select,nORp = 0.5)
+
+my_data_select <- my_data_select[-manyNAs(my_data_select,nORp = 0.5),]
+my_data_select[,var_loc] <- knnImputation(my_data_select[,var_loc],k=100)
+```
+
+
+##数据换算为不变价格数据（2009年的价格）
+
+###城乡分类CPI在国家统计局查询，分别对应相应的支出数据
+```{r}
+setwd("E:/科研立项/新建文件夹/CHARLS2013_Dataset")
+cpi <- read.csv('cpi.csv')
+
+##urban
+cpi_urban <- cpi[,c(1,2)]
+my_data_select[my_data_select$urban_nbs == 'Urban',var_loc]<- 
+  as.matrix(my_data_select[my_data_select$urban_nbs == 'Urban',var_loc])%*%solve(diag(cpi_urban$urban))
+  
+
+##Rural
+cpi_rural <- cpi[,c(1,3)]
+my_data_select[my_data_select$urban_nbs == 'Rural',var_loc]<- 
+  as.matrix(my_data_select[my_data_select$urban_nbs == 'Rural',var_loc])%*%solve(diag(cpi_rural$rural))
+
+```
+
+##数据频率转换
+
+###（1）：GE006- GE008为食品支出周数据，该数据*52
+```{r}
+my_data_select[,grep('^ge00[6,7,8]',colnames(my_data_select))]<- 
+  my_data_select[,grep('^ge00[6,7,8]',colnames(my_data_select))]*52
+```
+
+###（2）：GE009_1- GE009_7，为月数据，该数据*12
+```{r}
+my_data_select[,grep('^ge009',colnames(my_data_select))]<- 
+  my_data_select[,grep('^ge009',colnames(my_data_select))]*12
+```
+
+##4、微观数据与宏观数据的匹配
+```{r}
+tot <- apply(as.matrix(my_data_select[,var_loc]),1,sum)
+fi <- select(my_data_select,communityID,ID,householdID,urban_nbs)
+
+
+fi <- mutate(fi,AtB = ifelse(fi$urban_nbs == 'Rural',0.54,0.33)*my_data_select$ge006)
+fi <- mutate(fi,'15t16' = ifelse(fi$urban_nbs == 'Rural',0.46,0.67)*my_data_select$ge006_w2_1)
+fi <- mutate(fi,'64' = my_data_select$ge009_1)
+fi <- mutate(fi,'E' = my_data_select$ge009_2+my_data_select$ge010_3+
+               ifelse(fi$urban_nbs == 'Rural',0.35,0.82)*my_data_select$ge009_3)
+fi <- mutate(fi,C = ifelse(fi$urban_nbs == 'Rural',0.39,0.55)*my_data_select$ge009_3)
+fi <- mutate(fi,'23' = ifelse(fi$urban_nbs == 'Rural',0.61,0.45)*my_data_select$ge009_5)
+fi <- mutate(fi,'60' = ifelse(fi$urban_nbs == 'Rural',0.39,0.55)*my_data_select$ge009_5)
+
+fi <- mutate(fi,'24' = ifelse(fi$urban_nbs == 'Rural',0.39,0.42)*my_data_select$ge009_6)
+fi <- mutate(fi,'25' = ifelse(fi$urban_nbs == 'Rural',0.34,0.21)*my_data_select$ge009_6)
+fi <- mutate(fi,'26' = ifelse(fi$urban_nbs == 'Rural',0.11,0.15)*my_data_select$ge009_6)
+fi <- mutate(fi,'27t28' = ifelse(fi$urban_nbs == 'Rural',0.16,0.22)*my_data_select$ge009_6)
+
+
+fi <- mutate(fi,'21t22' = ifelse(fi$urban_nbs == 'Rural',0.35,0.28)*my_data_select$ge009_7)
+fi <- mutate(fi,'O' = ifelse(fi$urban_nbs == 'Rural',0.65,0.27)*my_data_select$ge009_7)
+
+fi <- mutate(fi,'17t18' = ifelse(fi$urban_nbs == 'Rural',0.8,0.68)*my_data_select$ge010_1)
+fi <- mutate(fi,'19' = ifelse(fi$urban_nbs == 'Rural',0.2,0.32)*my_data_select$ge010_1)
+
+fi <- mutate(fi,'60' = ifelse(fi$urban_nbs == 'Rural',0.13,0.09)*my_data_select$ge010_2)
+fi <- mutate(fi,'61' = ifelse(fi$urban_nbs == 'Rural',0.08,0.04)*my_data_select$ge010_2)
+fi <- mutate(fi,'62' = ifelse(fi$urban_nbs == 'Rural',0.02,0.02)*my_data_select$ge010_2)
+fi <- mutate(fi,'63' = ifelse(fi$urban_nbs == 'Rural',0.05,0.03)*my_data_select$ge010_2)
+fi <- mutate(fi,'H' = ifelse(fi$urban_nbs == 'Rural',0.72,0.82)*my_data_select$ge010_2)
+
+fi <- mutate(fi,'20' = ifelse(fi$urban_nbs == 'Rural',0.04,0.03)*my_data_select$ge010_4)
+fi <- mutate(fi,'36t37' = ifelse(fi$urban_nbs == 'Rural',0.09,0.11)*my_data_select$ge010_4)
+fi <- mutate(fi,'30t33' = ifelse(fi$urban_nbs == 'Rural',0.87,0.86)*my_data_select$ge010_4)
+
+fi <- mutate(fi,'M' = my_data_select$ge010_5)
+
+fi <- mutate(fi,'N' = ifelse(fi$urban_nbs == 'Rural',0.98,0.98)*my_data_select$ge010_6)
+fi <- mutate(fi,'29' = ifelse(fi$urban_nbs == 'Rural',0.02,0.02)*my_data_select$ge010_6)
+
+#another O
+fi <- mutate(fi,'O' = O + my_data_select$ge010_7)
+
+fi <- mutate(fi,'34t35' = ifelse(fi$urban_nbs == 'Rural',0.65,0.46)*my_data_select$ge010_10+
+               my_data_select$ge010_9)
+
+fi <- mutate(fi,'30t33' = ifelse(fi$urban_nbs == 'Rural',0.35,0.54)*my_data_select$ge010_10 + fi$`30t33`)
+
+fi <- mutate(fi,'70' = my_data_select$ge010_11)
+
+##tot
+fi <- mutate(fi,tot = apply(as.matrix(my_data_select[,var_loc]),1,sum))
+fi <- mutate(fi,'50t52' = ifelse(fi$urban_nbs == 'Rural',0.09,0.09)*fi$tot)
+
+## remove tot
+fi <- fi[,-32]
+
+
+# supplymentary
+
+fi <- mutate(fi,j=0)
+fi <- mutate(fi,'71t74'=0)
+fi <- mutate(fi,L=0)
+
+# exchange rate 
+rate = 0.130610833
+fi[,5:35]<- as.matrix(fi[,5:35]/rate)
+knitr::kable(fi[1:5,1:10],caption = '处理完成的数据')
+```
+
+```{r}
+setwd("E:/科研立项/新建文件夹/CHARLS2013_Dataset")
+standard<- read.csv('my2013.csv')
+str(standard)
+myvec_1 <- as.vector(as.numeric(fi[,1]))
+myvec_2 <- as.vector(as.numeric(fi[,2]))
+myvec_3 <- as.vector(as.numeric(fi[,3]))
+fi_tran <- fi
+fi_tran[,1] <- myvec_1
+fi_tran[,2] <- myvec_2
+fi_tran[,3] <- myvec_3
+str(fi_tran)
+
+standard_1 <- standard[fi_tran$ID%in%standard$ID,]
+```
+
+
